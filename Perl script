@@ -1,3 +1,6 @@
+Copyright (c) Gowrima K J
+
+
 
 typedef long unsigned int size_t;
 typedef unsigned char __u_char;
@@ -54,21 +57,13 @@ struct _IO_FILE;
 
 typedef struct _IO_FILE FILE;
 
-
-
-
-
-
-
-
-
 typedef struct _IO_FILE __FILE;
 typedef struct
 {
   int __count;
   union
   {
-    unsigned int __wch;
+  unsigned int __wch;
     char __wchb[4];
   } __value;
 } __mbstate_t;
