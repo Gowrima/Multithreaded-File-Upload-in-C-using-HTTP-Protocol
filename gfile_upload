@@ -1,0 +1,120 @@
+#include <stdio.h>          // for printf()
+#include <stdlib.h>         // for exit()
+#include <string.h>         // for strcpy(),strerror() and strlen()
+#include <fcntl.h>          // for file i/o constants
+#include <sys/stat.h>       // for file i/o constants
+#include <errno.h>
+
+// serve POST request from the client, this function calls other functions.
+void handle_POST(char *in_buf, int sd)
+{
+        char copy_inbuf[1024];
+        strcpy(copy_inbuf,in_buf);
+        char file_name[50];
+        char *ptr = file_name;
+        strtok(in_buf, " ");
+        
+        strcpy(file_name ,strtok(NULL, " "));
+        printf("filename: %s\n",file_name);
+
+        //remove '/' in the file name
+        
+        //create a new file with this filename
+        // file can be read/written to by the user only
+        int fd = open(ptr+1,O_RDONLY);
+        if(fd>0) {
+        
+            //file already exists, report error to the browser, print the message on the browser
+            char buf[100];
+
+            sprintf(buf,"HTTP/1.1 403 FORBIDDEN\nError: File exists\nServer: Gowrima_server2\nConnection: close\n\n"); 
+            
+             write(sd, buf, strlen(buf));
+        } else if(fd<0){
+        
+            int fd1 = open(ptr+1,O_RDWR|O_CREAT,S_IRWXU);
+
+            if(fd1<0) {
+            
+            //file not created. report error to the browser
+            
+            char buf[100];
+
+            sprintf(buf,"HTTP/1.1 403 FORBIDDEN\nError: %s\nServer: Gowrima_server2\nConnection: close\n\n",strerror(errno)); 
+            
+            write(sd, buf, strlen(buf));
+            }
+
+        // get the content length  
+        int content_len = get_contentlen(copy_inbuf);
+     //   printf("Orig req = %s, cont len = %d \n", copy_inbuf, content_len);
+        
+        //transfer 'content-len bytes from the HTTP body to the existing file on the server
+        int bytes_copied = copy_content(copy_inbuf,content_len, fd1, sd);
+       // printf("%d\n",bytes_copied);
+        }  
+}
+ 
+int copy_content(char* buf, int content_len, int fd, int sd) {
+        //return number of of bytes copied, should match the content-len
+        
+    // 1. get the cursor at the end of 'Accept-Language'
+    // 2. copy the content of 'content_bytes' length after this line to the file
+    
+        const char *target = "0.8";
+        char *res = NULL;
+        char *pos;
+        char size[100];
+        int i = 0;
+
+        res = strstr(buf, target);
+        printf("%s\n",res);
+        pos = (res+strlen(target));     //pos contains the beginning of the message body
+        //printf("message body begins here : %s\n",pos);
+        //printf("%s\n",pos);
+        //printf("%d\n",__LINE__);
+
+        int wrt = write_tofile(fd, pos, content_len, sd); //returns 0 if successful
+        if(wrt==0)
+        {
+            char buffer[100];
+            printf("sending ok message , sd: %d\n",sd);
+            sprintf(buffer,"HTTP/1.1 200 OK\nServer: Gowrima_server2\nContent-Length: %d\nConnection: close\n\n", content_len); 
+
+           write(sd, buffer, strlen(buffer));
+            return;        
+        }
+}
+
+int write_tofile(int fd, char* content, int bytestowrt, int sd) {
+
+        int bytes;
+        
+        bytes = write(fd,content,bytestowrt);
+        printf("Number of bytes written to file: %d\n",bytes);
+        
+        //closing the file after writing to it successfully
+        int mucchu = close(fd);
+        return 0;
+}
+
+int get_contentlen(char *in)
+{
+    //return the content length given in the HTTP header
+    const char *target = "Content-Length: "; //compare and find target in in_buf
+    char* res = NULL;
+    char *pos;
+    char size[10]; //holds content-len number in char
+    int i = 0; 
+
+    res = strstr(in, target);
+    pos = (res+strlen(target));
+    while (*pos != '\n' && i < 8) {
+        size[i] = *pos++;
+        ++i;
+    }
+    size[i] = '\0';
+   // printf("size of content len = %s, %d\n",atoi(size));
+    return atoi(size);
+
+}
