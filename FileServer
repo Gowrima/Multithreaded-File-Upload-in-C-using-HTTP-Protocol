@@ -1,0 +1,320 @@
+#include <stdio.h>          // for printf()
+#include <stdlib.h>         // for exit()
+#include <string.h>         // for strcpy(),strerror() and strlen()
+#include <fcntl.h>          // for file i/o constants
+#include <sys/stat.h>       // for file i/o constants
+#include <errno.h>
+
+#include <sys/types.h>      //  
+#include <netinet/in.h>     //  
+#include <sys/socket.h>     // for socket system calls 
+#include <arpa/inet.h>      // for socket system calls (bind)
+#include <sched.h>  
+#include <pthread.h>        /* P-thread implementation        */   
+#include <signal.h>         /* for signal                     */
+#include <semaphore.h>      /* for p-thread semaphores        */
+#include <fcntl.h>
+
+#define OK_IMAGE    "HTTP/1.0 200 OK\nContent-Type:image/gif\n\n"
+#define OK_TEXT     "HTTP/1.0 200 OK\nContent-Type:text/html\n\n"
+#define NOTOK_404   "HTTP/1.0 404 Not Found\nContent-Type:text/html\n\n"
+#define MESS_404    "<html><body><h1>FILE NOT FOUND</h1></body></html>"
+ 
+#define BUF_SIZE            1024     // buffer size in bytes
+#define PORT_NUM           6640    // Port number for a Web server (TCP 5080)
+#define PEND_CONNECTIONS     100     // pending connections to hold
+#define TRUE                   1
+#define FALSE                  0
+#define NTHREADS 5                     /* Number of child threads        */
+#define NUM_LOOPS  10                  /* Number of local loops          */
+#define SCHED_INTVL 5                  /* thread scheduling interval     */
+#define HIGHPRIORITY 10
+ 
+//global variables 
+sem_t thread_sem[NTHREADS]; 
+int   next_thread; 
+int   can_run;
+int   i_stopped[NTHREADS];
+ 
+unsigned int    client_s;               // Client socket descriptor
+
+// 
+void handle_POST(char *in_buf, int sd)
+{
+        char copy_inbuf[1024];
+        strcpy(copy_inbuf,in_buf);
+        char file_name[50];
+        char *ptr = file_name;
+        //char *ptr;
+        //char *str = "i am whatever";
+        strtok(in_buf, " ");
+        
+        strcpy(file_name ,strtok(NULL, " "));
+        printf("filename: %s %s\n",ptr+1, in_buf);
+
+        //remove '/' in the file name
+        
+        //create a new file with this filename
+        // file can be read/written to by the user only
+        int fd = open(ptr,O_CREAT|O_RDWR);
+        if(fd<0) {
+        
+            //file not created, report error to the browser
+            char buf[100];
+
+         sprintf(buf,"HTTP/1.1 403 FORBIDDEN\nError: %s\nServer: Gowrima_server2\nConnection: close\n\n",strerror(errno)); 
+            
+           write(sd, buf, strlen(buf));
+        } else if(fd>0){
+        
+
+        // get the content length  
+        int content_len = get_contentlen(copy_inbuf);
+        
+        //transfer 'content-len bytes from the HTTP body to the existing file on the server
+        int bytes_copied = copy_content(copy_inbuf,content_len, fd, sd);
+        printf("%d\n",bytes_copied);
+        } else {
+            printf("File creation failed for unknown reasons. fd = 0\n");
+        }
+
+}
+ 
+int copy_content(char* buf, int content_len, int fd, int sd) {
+        //return number of of bytes copied, should match the content-len
+        
+    // 1. get the cursor at the end of 'Accept-Language'
+    // 2. copy the content of 'content_bytes' length after this line to the file
+    
+        const char *target = "\r\n\r\n";
+        char *res = NULL;
+        char *pos = buf[0];
+        char size[100];
+        int i = 0;
+
+        printf("%s: !!!!!!!!!!!Printing %s\n",__FUNCTION__, buf);
+        res = strstr(buf, target);
+        if (res == NULL) {
+            printf("Cannot parse until body!");
+            return;
+        }
+        printf("**************%c\n",res[0]);
+        pos = (res+strlen(target));     //pos contains the beginning of the message body
+        printf("message body begins here : %s\n",pos);
+        printf("%s\n",pos);
+
+        int wrt = write_tofile(fd, pos, content_len, sd); //returns 0 if successful
+        if(wrt==0)
+        {
+            char buffer[100];
+            printf("sending ok message , sd: %d\n",sd);
+            sprintf(buffer,"HTTP/1.1 200 OK\nServer: Gowrima_server2\nContent-Length: %d\nConnection: close\n\n", content_len); 
+
+           write(sd, buffer, strlen(buffer));
+            return;        
+        }
+}
+
+
+int write_tofile(int fd, char* content, int bytestowrt, int sd) {
+
+    int bytes;
+        
+    bytes = write(fd,content,bytestowrt);
+    printf("To write %d Number of bytes written to file %d: %d\n",bytestowrt, fd, bytes);
+        
+    //closing the file after writing to it successfully
+    close(fd);
+    return 0;
+}
+
+
+int get_contentlen(char *in)
+{
+    //return the content length given in the HTTP header
+    const char *target = "Content-Length: "; //compare and find target in in_buf
+    char* res = NULL;
+    char *pos;
+    char size[10]; //holds content-len number in char
+    int i = 0; 
+
+    res = strstr(in, target);
+    printf("%s: %s \n ", __FUNCTION__, in);
+    pos = (res+strlen(target));
+    while (*pos != '\n' && i < 8) {
+        size[i] = *pos++;
+        ++i;
+    }
+    size[i] = '\0';
+    printf("size of content len = , %d\n",atoi(size));
+    return atoi(size);
+
+}
+
+/* Child thread implementation ----------------------------------------- */
+void *my_thread(void * arg)
+{
+   unsigned int    myClient_s;         //copy socket
+     
+    /* other local variables ------------------------------------------------ */
+  char           in_buf[BUF_SIZE];           // Input buffer for GET resquest
+  char           out_buf[BUF_SIZE];          // Output buffer for HTML response
+  char           *file_name;                 // File name
+  unsigned int   fh;                         // File handle (file descriptor)
+  unsigned int   buf_len;                    // Buffer length for file reads
+  unsigned int   retcode;                    // Return code
+ 
+  myClient_s = *(unsigned int *)arg;        // copy the socket
+ 
+  /* receive the first HTTP request (HTTP GET) ------- */
+      retcode = recv(client_s, in_buf, BUF_SIZE, 0);
+ 
+      /* if receive error --- */
+      if (retcode < 0)
+      {   printf("recv error detected ...\n");
+      }
+
+      /* find out whether the request is get or post */
+      if(in_buf[0] == 'P' || in_buf[0] == 'p') {
+          char buffer[100];
+          //printf("sending ok message before handling POST");
+          //sprintf(buffer,"HTTP/1.1 200 OK\nServer: Gowrima_serve1r\nConnection: close\n\n"); 
+          //send(myClient_s, buffer, strlen(buffer), 0);
+          handle_POST(in_buf, myClient_s);
+          close(myClient_s);
+
+          return;
+      }
+     
+      /* if HTTP command successfully received --- */
+       if (in_buf[0] == 'G' || in_buf[0] == 'g')
+      {   
+        /* Parse out the filename from the GET request --- */
+        strtok(in_buf, " ");
+        file_name = strtok(NULL, " ");
+        printf("filename: %s\n",file_name);
+        //test for high priority file
+        if(0 == strcmp(&file_name[1],"test_00.jpeg")){
+            int diditwork = pthread_setschedprio(pthread_self(), HIGHPRIORITY);
+            if(!diditwork)
+                printf("priority wasn't increased correctly ...\n");
+            else{
+                printf("High priority thread created ...\n");
+            }
+        }
+ 
+        /* Open the requested file (start at 2nd char to get rid of leading "\") */
+        fh = open(&file_name[1], O_RDONLY, S_IREAD | S_IWRITE);
+   
+        /* Generate and send the response (404 if could not open the file) */
+        if (fh == -1)
+        {
+          printf("File %s not found - sending an HTTP 404 \n", &file_name[1]);
+            printf("404 error\n%d",__LINE__);
+
+          strcpy(out_buf, NOTOK_404);
+          send(client_s, out_buf, strlen(out_buf), 0);
+
+          strcpy(out_buf, MESS_404);
+          send(client_s, out_buf, strlen(out_buf), 0);
+
+        }
+        else
+        {
+        
+          if ((strstr(file_name, ".jpeg") != NULL)||(strstr(file_name, ".gif") != NULL))
+          { strcpy(out_buf, OK_IMAGE);
+
+         }
+ 
+          else
+          { strcpy(out_buf, OK_TEXT);
+
+         }
+          send(client_s, out_buf, strlen(out_buf), 0);
+
+ 
+          buf_len = 1; 
+          while (buf_len > 0) 
+          {
+            buf_len = read(fh, out_buf, BUF_SIZE);
+
+            if (buf_len > 0)  
+            {
+              send(client_s, out_buf, buf_len, 0);    
+
+
+            }
+          }
+ 
+          close(fh);       // close the file
+          close(client_s); // close the client connection
+          pthread_exit(NULL);
+        }
+      }
+ 
+}
+ 
+//===== Main program ========================================================
+int main(int argc, char* argv[])
+{
+  /* local variables for socket connection -------------------------------- */
+  unsigned int          server_s;               // Server socket descriptor
+  struct sockaddr_in    server_addr;            // Server Internet address
+  //unsigned int            client_s;           // Client socket descriptor
+  struct sockaddr_in    client_addr;            // Client Internet address
+  struct in_addr        client_ip_addr;         // Client IP address
+  int                   addr_len;               // Internet address length
+ 
+  unsigned int          ids;                    // holds thread args
+  pthread_attr_t        attr;                   //  pthread attributes
+  pthread_t             threads;                // Thread ID (used by OS)
+
+  /* create a new socket -------------------------------------------------- */
+  server_s = socket(AF_INET, SOCK_STREAM, 0);
+  printf("%d new socket created \n",__LINE__); 
+  /* fill-in address information, and then bind it ------------------------ */
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(atoi(argv[1]));
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  bind(server_s, (struct sockaddr *)&server_addr, sizeof(server_addr));
+  printf("%d bind successful \n",__LINE__);
+  /* Listen for connections and then accept ------------------------------- */
+  listen(server_s, PEND_CONNECTIONS);
+ printf("%d listening for connections \n",__LINE__);
+  /* the web server main loop ============================================= */
+  pthread_attr_init(&attr);
+  while(TRUE)
+  {
+    printf("my server is ready ...\n"); 
+ 
+    /* wait for the next client to arrive -------------- */
+    addr_len = sizeof(client_addr);
+    client_s = accept(server_s, (struct sockaddr *)&client_addr, &addr_len);
+    printf("connection accepted %d\n",__LINE__);
+    printf("a new client arrives ...\n"); 
+ 
+    if (client_s == FALSE)
+    {
+      printf("ERROR - Unable to create socket \n");
+      exit(FALSE);
+    }
+ 
+    else
+    {
+        /* Create a child thread --------------------------------------- */
+        ids = client_s;
+        pthread_create (                    /* Create a child thread        */
+                   &threads,                /* Thread ID (system assigned)  */    
+                   &attr,                   /* Default thread attributes    */
+                   my_thread,               /* Thread routine               */
+                   &ids);                   /* Arguments to be passed       */
+        printf("new thread created %d\n",__LINE__);
+ 
+    }
+  }
+ 
+  /* To make sure this "main" returns an integer --- */
+  close (server_s);  // close the primary socket
+  return (TRUE);        // return code from "main"
+}
