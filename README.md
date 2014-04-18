@@ -1,4 +1,4 @@
 Multithreaded-File-Upload-in-C-using-HTTP-Protocol
 ==================================================
 
-Receives POST request from a client and handles the file upload operation
+Multithreaded server implemented in C using pthreads. GET, POST method implementation. Returns 200 OK for successful operations and appropriate error codes otherwise.
